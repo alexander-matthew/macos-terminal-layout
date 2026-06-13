@@ -1,0 +1,281 @@
+#!/usr/bin/env bash
+#
+# term-layout - Configure macOS Terminal.app window layout profiles.
+# Supports 'vertical' (2 stacked on right third) and 'full' (4 in 2x2 grid).
+# Uses the 'Clear Dark' profile.
+#
+
+set -euo pipefail
+
+# Print help/usage information
+show_help() {
+    cat <<EOF
+term-layout - Configure macOS Terminal.app window layouts
+
+Usage:
+  term-layout [layout] [options]
+
+Layouts:
+  vertical | v    Two terminals stacked on the right third of the screen (100% height)
+  full     | f    Four terminals arranged in a 2x2 grid taking up the full screen
+
+Options:
+  -c, --clean     Close all other Terminal windows first
+  -h, --help      Show this help message
+
+If no layout is specified, an interactive menu will be displayed.
+EOF
+}
+
+# Parse command-line arguments
+CLEAN=false
+LAYOUT=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -c|--clean)
+            CLEAN=true
+            shift
+            ;;
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        vertical|v)
+            LAYOUT="vertical"
+            shift
+            ;;
+        full|f)
+            LAYOUT="full"
+            shift
+            ;;
+        *)
+            echo "Error: Unknown argument '$1'" >&2
+            show_help >&2
+            exit 1
+            ;;
+    esac
+done
+
+# Interactive menu if no layout is specified
+if [[ -z "$LAYOUT" ]]; then
+    echo "==========================================="
+    echo "       Terminal Layout Manager"
+    echo "==========================================="
+    echo "Select a layout profile to apply:"
+    echo "  1) Vertical (2 terminals stacked on the right third)"
+    echo "  2) Full (4 terminals in a 2x2 grid)"
+    echo "  3) Cancel"
+    echo "-------------------------------------------"
+    read -r -p "Enter choice [1-3]: " choice
+    case "$choice" in
+        1)
+            LAYOUT="vertical"
+            ;;
+        2)
+            LAYOUT="full"
+            ;;
+        *)
+            echo "Operation cancelled."
+            exit 0
+            ;;
+    esac
+
+    echo ""
+    read -r -p "Would you like to close other open terminal windows first? (y/N): " clean_choice
+    case "$clean_choice" in
+        [yY]|[yY][eE][sS])
+            CLEAN=true
+            ;;
+        *)
+            CLEAN=false
+            ;;
+    esac
+fi
+
+echo "Applying '$LAYOUT' layout (Clean: $CLEAN)..."
+
+# Run AppleScript to arrange Terminal windows
+osascript - "$LAYOUT" "$CLEAN" <<'EOF'
+use AppleScript version "2.4"
+use framework "Foundation"
+use framework "AppKit"
+use scripting additions
+
+on run argv
+    set layoutType to item 1 of argv
+    set closeOthers to (item 2 of argv is "true")
+    
+    -- Retrieve screen dimensions using AppKit (excludes dock/menu bar dynamically)
+    set mainScreen to current application's NSScreen's mainScreen()
+    set screenFrame to mainScreen's frame()
+    set visibleFrame to mainScreen's visibleFrame()
+    
+    -- Height is needed for coordinate conversion (AppKit is bottom-left origin, Terminal is top-left origin)
+    set screenHeight to item 2 of (item 2 of screenFrame)
+    
+    -- Extract visible frame values
+    set vx to item 1 of (item 1 of visibleFrame)
+    set vy to item 2 of (item 1 of visibleFrame)
+    set vw to item 1 of (item 2 of visibleFrame)
+    set vh to item 2 of (item 2 of visibleFrame)
+    
+    -- Usable area boundaries in top-left coordinate system
+    set Usable_Left to vx
+    set Usable_Top to screenHeight - (vy + vh)
+    set Usable_Right to vx + vw
+    set Usable_Bottom to screenHeight - vy
+    set Usable_Width to vw
+    set Usable_Height to vh
+    
+    tell application "Terminal"
+        activate
+        
+        -- Make sure "Clear Dark" is the default profile for new windows
+        try
+            set default settings to settings set "Clear Dark"
+        end try
+        
+        -- Identify existing windows
+        set existingWindows to every window
+        set currentWindow to missing value
+        set hasCurrent to false
+        
+        if (count of existingWindows) > 0 then
+            set currentWindow to front window
+            set hasCurrent to true
+        end if
+        
+        if layoutType is "vertical" then
+            -- Calculations for 2 stacked windows on the right third of the screen
+            set colWidth to (Usable_Width / 3) as integer
+            set colStart to (Usable_Left + Usable_Width - colWidth) as integer
+            set rowHeight to (Usable_Height / 2) as integer
+            
+            set w1_left to colStart
+            set w1_top to Usable_Top as integer
+            set w1_right to Usable_Right as integer
+            set w1_bottom to (Usable_Top + rowHeight) as integer
+            
+            set w2_left to colStart
+            set w2_top to w1_bottom
+            set w2_right to Usable_Right as integer
+            set w2_bottom to Usable_Bottom as integer
+            
+            -- Place window 1 (reuse current if available)
+            if hasCurrent then
+                set bounds of currentWindow to {w1_left, w1_top, w1_right, w1_bottom}
+                try
+                    set current settings of first tab of currentWindow to settings set "Clear Dark"
+                end try
+                set win1 to currentWindow
+            else
+                set newTab to do script ""
+                set win1 to first window whose tabs contains newTab
+                set bounds of win1 to {w1_left, w1_top, w1_right, w1_bottom}
+                try
+                    set current settings of newTab to settings set "Clear Dark"
+                end try
+            end if
+            
+            -- Place window 2
+            set newTab2 to do script ""
+            set win2 to first window whose tabs contains newTab2
+            set bounds of win2 to {w2_left, w2_top, w2_right, w2_bottom}
+            try
+                set current settings of newTab2 to settings set "Clear Dark"
+            end try
+            
+            -- Close other windows if requested
+            if closeOthers then
+                repeat with w in existingWindows
+                    if w is not win1 then
+                        try
+                            close w saving no
+                        end try
+                    end if
+                end repeat
+            end if
+            
+        else if layoutType is "full" then
+            -- Calculations for 4 windows in a 2x2 grid covering 100% of the screen
+            set colWidth to (Usable_Width / 2) as integer
+            set rowHeight to (Usable_Height / 2) as integer
+            
+            -- Grid coordinates
+            set tl_left to Usable_Left as integer
+            set tl_top to Usable_Top as integer
+            set tl_right to (Usable_Left + colWidth) as integer
+            set tl_bottom to (Usable_Top + rowHeight) as integer
+            
+            set tr_left to tl_right
+            set tr_top to Usable_Top as integer
+            set tr_right to Usable_Right as integer
+            set tr_bottom to tl_bottom
+            
+            set bl_left to Usable_Left as integer
+            set bl_top to tl_bottom
+            set bl_right to tl_right
+            set bl_bottom to Usable_Bottom as integer
+            
+            set br_left to tl_right
+            set br_top to tl_bottom
+            set br_right to Usable_Right as integer
+            set br_bottom to Usable_Bottom as integer
+            
+            -- Position top-left (reuse current if available)
+            if hasCurrent then
+                set bounds of currentWindow to {tl_left, tl_top, tl_right, tl_bottom}
+                try
+                    set current settings of first tab of currentWindow to settings set "Clear Dark"
+                end try
+                set win1 to currentWindow
+            else
+                set newTab to do script ""
+                set win1 to first window whose tabs contains newTab
+                set bounds of win1 to {tl_left, tl_top, tl_right, tl_bottom}
+                try
+                    set current settings of newTab to settings set "Clear Dark"
+                end try
+            end if
+            
+            -- Position top-right
+            set newTab2 to do script ""
+            set win2 to first window whose tabs contains newTab2
+            set bounds of win2 to {tr_left, tr_top, tr_right, tr_bottom}
+            try
+                set current settings of newTab2 to settings set "Clear Dark"
+            end try
+            
+            -- Position bottom-left
+            set newTab3 to do script ""
+            set win3 to first window whose tabs contains newTab3
+            set bounds of win3 to {bl_left, bl_top, bl_right, bl_bottom}
+            try
+                set current settings of newTab3 to settings set "Clear Dark"
+            end try
+            
+            -- Position bottom-right
+            set newTab4 to do script ""
+            set win4 to first window whose tabs contains newTab4
+            set bounds of win4 to {br_left, br_top, br_right, br_bottom}
+            try
+                set current settings of newTab4 to settings set "Clear Dark"
+            end try
+            
+            -- Close other windows if requested
+            if closeOthers then
+                repeat with w in existingWindows
+                    if w is not win1 then
+                        try
+                            close w saving no
+                        end try
+                    end if
+                end repeat
+            end if
+        end if
+    end tell
+end run
+EOF
+
+echo "Layout applied successfully."
