@@ -1,281 +1,500 @@
-#!/usr/bin/env bash
+#!/usr/bin/env python3
 #
-# term-layout - Configure macOS Terminal.app window layout profiles.
-# Supports 'vertical' (2 stacked on right third) and 'full' (4 in 2x2 grid).
-# Uses the 'Clear Dark' profile.
+# term-layout - Configurable CLI to save and apply macOS Terminal layouts.
+# Works with native macOS Terminal.app and translates layouts responsively.
 #
 
-set -euo pipefail
+import os
+import sys
+import json
+import subprocess
+import shutil
 
-# Print help/usage information
-show_help() {
-    cat <<EOF
-term-layout - Configure macOS Terminal.app window layouts
+CONFIG_DIR = os.path.expanduser("~/.config/term-layout")
+CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 
-Usage:
-  term-layout [layout] [options]
-
-Layouts:
-  vertical | v    Two terminals stacked on the right third of the screen (100% height)
-  full     | f    Four terminals arranged in a 2x2 grid taking up the full screen
-
-Options:
-  -c, --clean     Close all other Terminal windows first
-  -h, --help      Show this help message
-
-If no layout is specified, an interactive menu will be displayed.
-EOF
+# Default configurations
+DEFAULT_LAYOUTS = {
+    "layouts": {
+        "vertical": [
+            {
+                "left": 0.6667,
+                "top": 0.0,
+                "right": 1.0,
+                "bottom": 0.5,
+                "profile": "Clear Dark"
+            },
+            {
+                "left": 0.6667,
+                "top": 0.5,
+                "right": 1.0,
+                "bottom": 1.0,
+                "profile": "Clear Dark"
+            }
+        ],
+        "full": [
+            {
+                "left": 0.0,
+                "top": 0.0,
+                "right": 0.5,
+                "bottom": 0.5,
+                "profile": "Clear Dark"
+            },
+            {
+                "left": 0.5,
+                "top": 0.0,
+                "right": 1.0,
+                "bottom": 0.5,
+                "profile": "Clear Dark"
+            },
+            {
+                "left": 0.0,
+                "top": 0.5,
+                "right": 0.5,
+                "bottom": 1.0,
+                "profile": "Clear Dark"
+            },
+            {
+                "left": 0.5,
+                "top": 0.5,
+                "right": 1.0,
+                "bottom": 1.0,
+                "profile": "Clear Dark"
+            }
+        ]
+    }
 }
 
-# Parse command-line arguments
-CLEAN=false
-LAYOUT=""
+# ANSI Escape Sequences for beautiful terminal output
+class Colors:
+    HEADER = '\033[95m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    GREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
 
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        -c|--clean)
-            CLEAN=true
-            shift
-            ;;
-        -h|--help)
-            show_help
-            exit 0
-            ;;
-        vertical|v)
-            LAYOUT="vertical"
-            shift
-            ;;
-        full|f)
-            LAYOUT="full"
-            shift
-            ;;
-        *)
-            echo "Error: Unknown argument '$1'" >&2
-            show_help >&2
-            exit 1
-            ;;
-    esac
-done
+def print_err(msg):
+    print(f"{Colors.FAIL}Error:{Colors.ENDC} {msg}", file=sys.stderr)
 
-# Interactive menu if no layout is specified
-if [[ -z "$LAYOUT" ]]; then
-    echo "==========================================="
-    echo "       Terminal Layout Manager"
-    echo "==========================================="
-    echo "Select a layout profile to apply:"
-    echo "  1) Vertical (2 terminals stacked on the right third)"
-    echo "  2) Full (4 terminals in a 2x2 grid)"
-    echo "  3) Cancel"
-    echo "-------------------------------------------"
-    read -r -p "Enter choice [1-3]: " choice
-    case "$choice" in
-        1)
-            LAYOUT="vertical"
-            ;;
-        2)
-            LAYOUT="full"
-            ;;
-        *)
-            echo "Operation cancelled."
-            exit 0
-            ;;
-    esac
+def print_info(msg):
+    print(f"{Colors.BLUE}Info:{Colors.ENDC} {msg}")
 
-    echo ""
-    read -r -p "Would you like to close other open terminal windows first? (y/N): " clean_choice
-    case "$clean_choice" in
-        [yY]|[yY][eE][sS])
-            CLEAN=true
-            ;;
-        *)
-            CLEAN=false
-            ;;
-    esac
-fi
+def print_success(msg):
+    print(f"{Colors.GREEN}Success:{Colors.ENDC} {msg}")
 
-echo "Applying '$LAYOUT' layout (Clean: $CLEAN)..."
+def run_applescript(script_code):
+    """Executes AppleScript code via osascript and returns stdout."""
+    try:
+        process = subprocess.Popen(
+            ['osascript', '-'],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        stdout, stderr = process.communicate(script_code)
+        if process.returncode != 0:
+            raise Exception(stderr.strip())
+        return stdout
+    except Exception as e:
+        print_err(f"Failed to run AppleScript: {e}")
+        sys.exit(1)
 
-# Run AppleScript to arrange Terminal windows
-osascript - "$LAYOUT" "$CLEAN" <<'EOF'
-use AppleScript version "2.4"
+def get_screen_info():
+    """Returns usable screen coordinates (left, top, width, height) in pixels."""
+    script = """use AppleScript version "2.4"
 use framework "Foundation"
 use framework "AppKit"
 use scripting additions
 
-on run argv
-    set layoutType to item 1 of argv
-    set closeOthers to (item 2 of argv is "true")
-    
-    -- Retrieve screen dimensions using AppKit (excludes dock/menu bar dynamically)
-    set mainScreen to current application's NSScreen's mainScreen()
-    set screenFrame to mainScreen's frame()
-    set visibleFrame to mainScreen's visibleFrame()
-    
-    -- Height is needed for coordinate conversion (AppKit is bottom-left origin, Terminal is top-left origin)
-    set screenHeight to item 2 of (item 2 of screenFrame)
-    
-    -- Extract visible frame values
-    set vx to item 1 of (item 1 of visibleFrame)
-    set vy to item 2 of (item 1 of visibleFrame)
-    set vw to item 1 of (item 2 of visibleFrame)
-    set vh to item 2 of (item 2 of visibleFrame)
-    
-    -- Usable area boundaries in top-left coordinate system
-    set Usable_Left to vx
-    set Usable_Top to screenHeight - (vy + vh)
-    set Usable_Right to vx + vw
-    set Usable_Bottom to screenHeight - vy
-    set Usable_Width to vw
-    set Usable_Height to vh
-    
-    tell application "Terminal"
-        activate
-        
-        -- Make sure "Clear Dark" is the default profile for new windows
-        try
-            set default settings to settings set "Clear Dark"
-        end try
-        
-        -- Identify existing windows
-        set existingWindows to every window
-        set currentWindow to missing value
-        set hasCurrent to false
-        
-        if (count of existingWindows) > 0 then
-            set currentWindow to front window
-            set hasCurrent to true
-        end if
-        
-        if layoutType is "vertical" then
-            -- Calculations for 2 stacked windows on the right third of the screen
-            set colWidth to (Usable_Width / 3) as integer
-            set colStart to (Usable_Left + Usable_Width - colWidth) as integer
-            set rowHeight to (Usable_Height / 2) as integer
-            
-            set w1_left to colStart
-            set w1_top to Usable_Top as integer
-            set w1_right to Usable_Right as integer
-            set w1_bottom to (Usable_Top + rowHeight) as integer
-            
-            set w2_left to colStart
-            set w2_top to w1_bottom
-            set w2_right to Usable_Right as integer
-            set w2_bottom to Usable_Bottom as integer
-            
-            -- Place window 1 (reuse current if available)
-            if hasCurrent then
-                set bounds of currentWindow to {w1_left, w1_top, w1_right, w1_bottom}
-                try
-                    set current settings of first tab of currentWindow to settings set "Clear Dark"
-                end try
-                set win1 to currentWindow
-            else
-                set newTab to do script ""
-                set win1 to first window whose tabs contains newTab
-                set bounds of win1 to {w1_left, w1_top, w1_right, w1_bottom}
-                try
-                    set current settings of newTab to settings set "Clear Dark"
-                end try
-            end if
-            
-            -- Place window 2
-            set newTab2 to do script ""
-            set win2 to first window whose tabs contains newTab2
-            set bounds of win2 to {w2_left, w2_top, w2_right, w2_bottom}
-            try
-                set current settings of newTab2 to settings set "Clear Dark"
-            end try
-            
-            -- Close other windows if requested
-            if closeOthers then
-                repeat with w in existingWindows
-                    if w is not win1 then
-                        try
-                            close w saving no
-                        end try
-                    end if
-                end repeat
-            end if
-            
-        else if layoutType is "full" then
-            -- Calculations for 4 windows in a 2x2 grid covering 100% of the screen
-            set colWidth to (Usable_Width / 2) as integer
-            set rowHeight to (Usable_Height / 2) as integer
-            
-            -- Grid coordinates
-            set tl_left to Usable_Left as integer
-            set tl_top to Usable_Top as integer
-            set tl_right to (Usable_Left + colWidth) as integer
-            set tl_bottom to (Usable_Top + rowHeight) as integer
-            
-            set tr_left to tl_right
-            set tr_top to Usable_Top as integer
-            set tr_right to Usable_Right as integer
-            set tr_bottom to tl_bottom
-            
-            set bl_left to Usable_Left as integer
-            set bl_top to tl_bottom
-            set bl_right to tl_right
-            set bl_bottom to Usable_Bottom as integer
-            
-            set br_left to tl_right
-            set br_top to tl_bottom
-            set br_right to Usable_Right as integer
-            set br_bottom to Usable_Bottom as integer
-            
-            -- Position top-left (reuse current if available)
-            if hasCurrent then
-                set bounds of currentWindow to {tl_left, tl_top, tl_right, tl_bottom}
-                try
-                    set current settings of first tab of currentWindow to settings set "Clear Dark"
-                end try
-                set win1 to currentWindow
-            else
-                set newTab to do script ""
-                set win1 to first window whose tabs contains newTab
-                set bounds of win1 to {tl_left, tl_top, tl_right, tl_bottom}
-                try
-                    set current settings of newTab to settings set "Clear Dark"
-                end try
-            end if
-            
-            -- Position top-right
-            set newTab2 to do script ""
-            set win2 to first window whose tabs contains newTab2
-            set bounds of win2 to {tr_left, tr_top, tr_right, tr_bottom}
-            try
-                set current settings of newTab2 to settings set "Clear Dark"
-            end try
-            
-            -- Position bottom-left
-            set newTab3 to do script ""
-            set win3 to first window whose tabs contains newTab3
-            set bounds of win3 to {bl_left, bl_top, bl_right, bl_bottom}
-            try
-                set current settings of newTab3 to settings set "Clear Dark"
-            end try
-            
-            -- Position bottom-right
-            set newTab4 to do script ""
-            set win4 to first window whose tabs contains newTab4
-            set bounds of win4 to {br_left, br_top, br_right, br_bottom}
-            try
-                set current settings of newTab4 to settings set "Clear Dark"
-            end try
-            
-            -- Close other windows if requested
-            if closeOthers then
-                repeat with w in existingWindows
-                    if w is not win1 then
-                        try
-                            close w saving no
-                        end try
-                    end if
-                end repeat
-            end if
-        end if
-    end tell
-end run
-EOF
+set mainScreen to current application's NSScreen's mainScreen()
+set screenFrame to mainScreen's frame()
+set visibleFrame to mainScreen's visibleFrame()
 
-echo "Layout applied successfully."
+set H to item 2 of (item 2 of screenFrame)
+set vx to item 1 of (item 1 of visibleFrame)
+set vy to item 2 of (item 1 of visibleFrame)
+set vw to item 1 of (item 2 of visibleFrame)
+set vh to item 2 of (item 2 of visibleFrame)
+
+set Usable_Left to vx
+set Usable_Top to H - (vy + vh)
+set Usable_Width to vw
+set Usable_Height to vh
+
+return (Usable_Left as string) & "," & (Usable_Top as string) & "," & (Usable_Width as string) & "," & (Usable_Height as string)
+"""
+    output = run_applescript(script).strip()
+    return list(map(float, output.split(',')))
+
+def load_config():
+    """Loads layouts from config file, initializing defaults if missing."""
+    if not os.path.exists(CONFIG_PATH):
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        with open(CONFIG_PATH, 'w') as f:
+            json.dump(DEFAULT_LAYOUTS, f, indent=4)
+        return DEFAULT_LAYOUTS
+    
+    try:
+        with open(CONFIG_PATH, 'r') as f:
+            return json.load(f)
+    except json.JSONDecodeError as e:
+        print_err(f"Config file JSON is corrupted: {e}\nLocation: {CONFIG_PATH}")
+        sys.exit(1)
+
+def save_config(config):
+    """Saves layouts configuration back to file."""
+    try:
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        with open(CONFIG_PATH, 'w') as f:
+            json.dump(config, f, indent=4)
+    except Exception as e:
+        print_err(f"Failed to save configuration: {e}")
+        sys.exit(1)
+
+def cmd_list(config):
+    """Lists all configured layout profiles."""
+    layouts = config.get("layouts", {})
+    if not layouts:
+        print_info("No terminal layouts configured.")
+        return
+
+    print(f"{Colors.BOLD}{Colors.HEADER}Available Terminal Layouts:{Colors.ENDC}\n")
+    for name, windows in layouts.items():
+        count = len(windows)
+        suffix = "terminal" if count == 1 else "terminals"
+        print(f"  • {Colors.CYAN}{Colors.BOLD}{name:<15}{Colors.ENDC} ({count} {suffix})")
+    print(f"\nApply a layout with: {Colors.BOLD}term-layout apply <name>{Colors.ENDC}")
+
+def cmd_show(config, name):
+    """Displays raw JSON of layout."""
+    layouts = config.get("layouts", {})
+    if name not in layouts:
+        print_err(f"Layout '{name}' not found.")
+        sys.exit(1)
+    print(json.dumps(layouts[name], indent=4))
+
+def cmd_remove(config, name):
+    """Removes a layout profile."""
+    layouts = config.get("layouts", {})
+    if name not in layouts:
+        print_err(f"Layout '{name}' not found.")
+        sys.exit(1)
+    
+    del layouts[name]
+    save_config(config)
+    print_success(f"Layout '{name}' removed successfully.")
+
+def cmd_save(config, name):
+    """Captures current Terminal.app layout and normalizes bounds to fractions."""
+    print_info("Querying active macOS Terminal windows...")
+    
+    script = """use AppleScript version "2.4"
+use framework "Foundation"
+use framework "AppKit"
+use scripting additions
+
+set mainScreen to current application's NSScreen's mainScreen()
+set screenFrame to mainScreen's frame()
+set visibleFrame to mainScreen's visibleFrame()
+
+set H to item 2 of (item 2 of screenFrame)
+set vx to item 1 of (item 1 of visibleFrame)
+set vy to item 2 of (item 1 of visibleFrame)
+set vw to item 1 of (item 2 of visibleFrame)
+set vh to item 2 of (item 2 of visibleFrame)
+
+set Usable_Left to vx
+set Usable_Top to H - (vy + vh)
+set Usable_Width to vw
+set Usable_Height to vh
+
+tell application "Terminal"
+    set winList to every window
+    set output to (Usable_Left as string) & "," & (Usable_Top as string) & "," & (Usable_Width as string) & "," & (Usable_Height as string) & linefeed
+    repeat with w in winList
+        set b to bounds of w
+        set p to name of current settings of first tab of w
+        set output to output & (item 1 of b) & "," & (item 2 of b) & "," & (item 3 of b) & "," & (item 4 of b) & "," & p & linefeed
+    end repeat
+    return output
+end tell
+"""
+    output = run_applescript(script).strip()
+    lines = output.split('\n')
+    
+    if len(lines) <= 1:
+        print_err("No open Terminal.app windows detected to capture.")
+        sys.exit(1)
+    
+    # Line 0: Screen usable boundaries
+    ul, ut, uw, uh = map(float, lines[0].split(','))
+    if uw <= 0 or uh <= 0:
+        print_err("Could not retrieve screen dimensions.")
+        sys.exit(1)
+
+    captured_windows = []
+    
+    for line in lines[1:]:
+        parts = line.split(',')
+        if len(parts) < 5:
+            continue
+        w_left = float(parts[0])
+        w_top = float(parts[1])
+        w_right = float(parts[2])
+        w_bottom = float(parts[3])
+        profile = ','.join(parts[4:]) # In case profile name has commas
+        
+        # Convert absolute coordinates to proportional fractions relative to usable screen area
+        rel_left = (w_left - ul) / uw
+        rel_top = (w_top - ut) / uh
+        rel_right = (w_right - ul) / uw
+        rel_bottom = (w_bottom - ut) / uh
+        
+        captured_windows.append({
+            "left": round(rel_left, 4),
+            "top": round(rel_top, 4),
+            "right": round(rel_right, 4),
+            "bottom": round(rel_bottom, 4),
+            "profile": profile
+        })
+    
+    # Save to config
+    config.setdefault("layouts", {})[name] = captured_windows
+    save_config(config)
+    print_success(f"Captured current screen dimensions ({int(uw)}x{int(uh)})")
+    print_success(f"Layout '{name}' ({len(captured_windows)} windows) saved successfully to config!")
+
+def cmd_apply(config, name, close_others=False):
+    """Applies a layout profile, scaling fractions to the current screen size."""
+    layouts = config.get("layouts", {})
+    if name not in layouts:
+        print_err(f"Layout '{name}' not found.")
+        print(f"Run {Colors.BOLD}term-layout list{Colors.ENDC} to see available options.")
+        sys.exit(1)
+    
+    windows = layouts[name]
+    if not windows:
+        print_err(f"Layout '{name}' has no windows configured.")
+        sys.exit(1)
+        
+    print_info(f"Applying layout '{name}'...")
+    
+    # Get current screen coordinates
+    ul, ut, uw, uh = get_screen_info()
+    
+    # Generate AppleScript to arrange windows
+    applescript_parts = [
+        'use AppleScript version "2.4"',
+        'use framework "Foundation"',
+        'use framework "AppKit"',
+        'use scripting additions',
+        '',
+        'tell application "Terminal"',
+        '    activate',
+        '    set existingWindows to every window',
+        '    set currentWindow to missing value',
+        '    set hasCurrent to false',
+        '    if (count of existingWindows) > 0 then',
+        '        set currentWindow to front window',
+        '        set hasCurrent to true',
+        '    end if'
+    ]
+    
+    reused_win = None
+    
+    for i, win in enumerate(windows):
+        w_left = int(ul + win['left'] * uw)
+        w_top = int(ut + win['top'] * uh)
+        w_right = int(ul + win['right'] * uw)
+        w_bottom = int(ut + win['bottom'] * uh)
+        profile = win['profile']
+        
+        # Make sure "Clear Dark" or specified profile is available
+        # Reuse frontmost window for the first pane
+        if i == 0:
+            applescript_parts.extend([
+                '    if hasCurrent then',
+                f'        set bounds of currentWindow to {{{w_left}, {w_top}, {w_right}, {w_bottom}}}',
+                '        try',
+                f'            set current settings of first tab of currentWindow to settings set "{profile}"',
+                '        end try',
+                '    else',
+                '        set newTab to do script ""',
+                '        set win0 to first window whose tabs contains newTab',
+                f'        set bounds of win0 to {{{w_left}, {w_top}, {w_right}, {w_bottom}}}',
+                '        try',
+                f'            set current settings of newTab to settings set "{profile}"',
+                '        end try',
+                '    end if'
+            ])
+        else:
+            applescript_parts.extend([
+                '    set newTab to do script ""',
+                f'    set win{i} to first window whose tabs contains newTab',
+                f'    set bounds of win{i} to {{{w_left}, {w_top}, {w_right}, {w_bottom}}}',
+                '    try',
+                f'        set current settings of newTab to settings set "{profile}"',
+                '    end try'
+            ])
+            
+    if close_others:
+        applescript_parts.extend([
+            '    if closeOthers then', # wait, closeOthers variable from python
+            '    end if'
+        ])
+        # Simple implementation: close other windows
+        applescript_parts.extend([
+            '    if hasCurrent then',
+            '        repeat with w in existingWindows',
+            '            if w is not currentWindow then',
+            '                try',
+            '                    close w saving no',
+            '                end try',
+            '            end if',
+            '        end repeat',
+            '    end if'
+        ])
+        
+    applescript_parts.append('end tell')
+    
+    script_code = '\n'.join(applescript_parts)
+    run_applescript(script_code)
+    print_success(f"Layout '{name}' applied successfully.")
+
+def cmd_edit():
+    """Opens the config file in editor."""
+    editor = os.environ.get("EDITOR", "nano")
+    print_info(f"Opening config file in {editor}...")
+    try:
+        subprocess.run([editor, CONFIG_PATH], check=True)
+    except Exception as e:
+        print_err(f"Could not open editor: {e}")
+        print(f"You can edit the config manually at: {CONFIG_PATH}")
+
+def run_interactive(config):
+    """Runs interactive setup selection."""
+    layouts = config.get("layouts", {})
+    if not layouts:
+        print_err("No layouts found in config file.")
+        sys.exit(1)
+        
+    print("===========================================")
+    print(f"       {Colors.BOLD}{Colors.HEADER}Terminal Layout CLI Manager{Colors.ENDC}")
+    print("===========================================")
+    print("Select a layout profile to apply:")
+    
+    layout_names = list(layouts.keys())
+    for idx, name in enumerate(layout_names, 1):
+        count = len(layouts[name])
+        suffix = "terminal" if count == 1 else "terminals"
+        print(f"  {idx}) {Colors.CYAN}{name:<15}{Colors.ENDC} ({count} {suffix})")
+    print(f"  {len(layout_names) + 1}) Cancel")
+    print("-------------------------------------------")
+    
+    try:
+        choice = input(f"Enter choice [1-{len(layout_names) + 1}]: ").strip()
+        if not choice:
+            print("Operation cancelled.")
+            return
+            
+        choice_idx = int(choice)
+        if choice_idx == len(layout_names) + 1:
+            print("Operation cancelled.")
+            return
+            
+        if 1 <= choice_idx <= len(layout_names):
+            layout_name = layout_names[choice_idx - 1]
+        else:
+            print_err("Invalid selection.")
+            return
+            
+        clean_choice = input("Would you like to close other open terminal windows first? (y/N): ").strip().lower()
+        close_others = clean_choice in ['y', 'yes']
+        
+        cmd_apply(config, layout_name, close_others)
+    except (ValueError, KeyboardInterrupt, EOFError):
+        print("\nOperation cancelled.")
+        sys.exit(0)
+
+def show_help():
+    print(f"""{Colors.BOLD}term-layout - Configurable CLI for macOS Terminal.app layouts{Colors.ENDC}
+
+Usage:
+  term-layout [command] [args]
+
+Commands:
+  apply | go <name> [-c|--clean]  Apply the layout profile (use -c to close others)
+  save | add <name>                Capture currently open Terminal windows and save as layout
+  remove | rm <name>               Delete a saved layout profile
+  list | ls                        List all saved layouts
+  show | cat <name>                Display the JSON details of a layout profile
+  edit                             Open the configuration file in your default editor
+  help | -h | --help               Show this help message
+
+Options:
+  -c, --clean                      When applying, close all other Terminal windows first
+
+If no command is provided, the CLI will run in interactive menu mode.
+""")
+
+def main():
+    config = load_config()
+    
+    if len(sys.argv) < 2:
+        run_interactive(config)
+        return
+
+    cmd = sys.argv[1].lower()
+    
+    if cmd in ['help', '-h', '--help']:
+        show_help()
+    elif cmd in ['list', 'ls']:
+        cmd_list(config)
+    elif cmd == 'edit':
+        cmd_edit()
+    elif cmd in ['show', 'cat']:
+        if len(sys.argv) < 3:
+            print_err("Missing layout name. Usage: term-layout show <name>")
+            sys.exit(1)
+        cmd_show(config, sys.argv[2])
+    elif cmd in ['remove', 'rm']:
+        if len(sys.argv) < 3:
+            print_err("Missing layout name. Usage: term-layout remove <name>")
+            sys.exit(1)
+        cmd_remove(config, sys.argv[2])
+    elif cmd in ['save', 'add']:
+        if len(sys.argv) < 3:
+            print_err("Missing layout name. Usage: term-layout save <name>")
+            sys.exit(1)
+        cmd_save(config, sys.argv[2])
+    elif cmd in ['apply', 'go']:
+        if len(sys.argv) < 3:
+            print_err("Missing layout name. Usage: term-layout apply <name> [-c|--clean]")
+            sys.exit(1)
+        name = sys.argv[2]
+        close_others = False
+        if len(sys.argv) > 3:
+            close_others = sys.argv[3] in ['-c', '--clean']
+        cmd_apply(config, name, close_others)
+    else:
+        # Fallback to apply if command matches a layout directly
+        # E.g. `term-layout vertical` instead of `term-layout apply vertical`
+        layouts = config.get("layouts", {})
+        if cmd in layouts:
+            name = cmd
+            close_others = False
+            if len(sys.argv) > 2:
+                close_others = sys.argv[2] in ['-c', '--clean']
+            cmd_apply(config, name, close_others)
+        else:
+            print_err(f"Unknown command or layout: '{cmd}'")
+            show_help()
+            sys.exit(1)
+
+if __name__ == '__main__':
+    main()

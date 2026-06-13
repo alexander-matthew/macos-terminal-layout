@@ -1,32 +1,22 @@
 # macos-terminal-layout
 
-A dynamic macOS shell script helper to organize, size, and layout macOS native `Terminal.app` windows. 
+A responsive, configurable macOS CLI to save and apply native `Terminal.app` window layout profiles.
 
-It calculates screen bounds dynamically (excluding the Dock and Menu Bar) using the `AppKit` framework via AppleScriptObjC, supports window reuse, and formats your layout into clean, tiled configurations.
-
-## Features
-
-* **Dynamic Resolution Sizing**: Uses AppKit coordinates so it adjusts automatically for any display size, Dock location, or menu bar settings.
-* **Window Reuse**: Keeps your active Terminal session intact by placing your running window as the primary pane, opening new windows to complete the layout.
-* **Clear Dark Theme Integration**: Automatically applies the native macOS `Clear Dark` settings profile to all layout windows.
-* **Clean Flag**: Option to automatically close all other open Terminal windows before applying a layout.
-* **Interactive Mode**: If executed without parameters, prompts you with an interactive selection menu.
+It calculates screen bounds dynamically (excluding the Dock and Menu Bar) using the `AppKit` framework via AppleScriptObjC, supports window reuse, and translates layouts responsively across different screen resolutions.
 
 ---
 
-## Layout Profiles
+## Key Features
 
-### 1. Vertical (`vertical` or `v`)
-Arranges **two** terminals stacked on top of each other, filling the right third ($33\%$) of the screen and spanning $100\%$ of the screen height.
-
-### 2. Full (`full` or `f`)
-Arranges **four** terminals in a perfect $2 \times 2$ grid filling $100\%$ of the screen.
+* **Proportional Coordinate Scaling**: When saving layouts, the CLI normalizes window bounds into percentage-based coordinates relative to your usable screen area. This ensures that any layout you capture on a 14" MacBook scales perfectly when applied on a 27" monitor.
+* **Layout Capture**: Arrange your terminal windows exactly as you like, then save the entire configuration with a single command. It captures each window's coordinates and active settings profile (e.g. `Clear Dark`).
+* **Active Window Reuse**: When applying a layout, it uses your active window as the primary pane, keeping your shell history and running processes intact while spinning up new windows around it.
+* **Configurable**: Settings are saved in a simple JSON file at `~/.config/term-layout/config.json`.
+* **Zero Dependencies**: Pure Python 3 script using native macOS AppleScriptObjC. No pip installations required.
 
 ---
 
 ## Installation
-
-To install, clone this repository and copy the `term-layout` script to a directory in your system `$PATH` (e.g., `~/.local/bin` or `/usr/local/bin`):
 
 ```bash
 # Clone the repository
@@ -43,29 +33,95 @@ cp term-layout ~/.local/bin/
 
 ---
 
-## Usage
+## Command Usage
 
+If run without arguments, `term-layout` starts an **interactive menu** where you can select a layout and configure options.
+
+### 1. List Layouts
+List all currently saved layout profiles:
 ```bash
-# Run the interactive layout selector
-term-layout
-
-# Set up stacked terminals on the right 1/3 of the screen
-term-layout vertical
+term-layout list
 # or shorthand:
-term-layout v
+term-layout ls
+```
 
-# Set up 4 terminals in a 2x2 grid covering the full screen
-term-layout full
+### 2. Apply a Layout
+Apply a saved layout configuration:
+```bash
+term-layout apply <layout-name>
 # or shorthand:
-term-layout f
+term-layout go <layout-name>
+```
+**Options:**
+* `-c` or `--clean`: Closes all other Terminal windows first, leaving only the applied layout.
+  ```bash
+  term-layout apply vertical -c
+  ```
 
-# Add the clean flag (-c or --clean) to close other terminal windows first
-term-layout full --clean
-term-layout v -c
+### 3. Capture/Save Layout
+Arrange your Terminal windows on your screen, then save the setup:
+```bash
+term-layout save <layout-name>
+# or shorthand:
+term-layout add <layout-name>
+```
+
+### 4. Remove a Layout
+Delete a saved layout profile:
+```bash
+term-layout remove <layout-name>
+# or shorthand:
+term-layout rm <layout-name>
+```
+
+### 5. Inspect a Layout
+Display the configuration data (JSON format) for a layout profile:
+```bash
+term-layout show <layout-name>
+# or shorthand:
+term-layout cat <layout-name>
+```
+
+### 6. Edit Configuration
+Open the config file in your system's default editor (uses `$EDITOR`, fallback to `nano`):
+```bash
+term-layout edit
+```
+
+---
+
+## Configuration File
+
+The default layouts are populated inside `~/.config/term-layout/config.json` on first run:
+* `vertical`: Stacked 2 windows on the right 1/3 of the screen.
+* `full`: 4 windows in a 2x2 grid.
+
+Example configuration details:
+```json
+{
+    "layouts": {
+        "vertical": [
+            {
+                "left": 0.6667,
+                "top": 0.0,
+                "right": 1.0,
+                "bottom": 0.5,
+                "profile": "Clear Dark"
+            },
+            {
+                "left": 0.6667,
+                "top": 0.5,
+                "right": 1.0,
+                "bottom": 1.0,
+                "profile": "Clear Dark"
+            }
+        ]
+    }
+}
 ```
 
 ---
 
 ## License
 
-This project is open-source and available under the [MIT License](LICENSE).
+This project is licensed under the [MIT License](LICENSE).
